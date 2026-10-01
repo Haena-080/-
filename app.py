@@ -75,7 +75,7 @@ def classify_device_line(item_name):
         return '기타 기기'
 
 # ---------------------------------------------------------
-# 3. 데이터 로드 및 정제 (마감일자/출고일자 자동 분석)
+# 3. 데이터 로드 및 정제 (날짜 혼합 서식 자동 지원)
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def load_data(uploaded_files=None):
@@ -103,7 +103,6 @@ def load_data(uploaded_files=None):
             df = df_raw.iloc[header_idx+1:].copy()
             df.columns = [str(c).strip() for c in df_raw.iloc[header_idx].values]
             
-            # 필수 컬럼 존재 확인
             if 'Level 1' not in df.columns:
                 continue
 
@@ -112,7 +111,7 @@ def load_data(uploaded_files=None):
             df['수출국가'] = df['수출국가'].astype(str).str.strip().str.title()
             df['수량환산'] = pd.to_numeric(df['수량환산'], errors='coerce').fillna(0)
             
-            # ★ 날짜/연도/월 자동 추출 로직 (출고일자 최우선 활용)
+            # ★ 날짜 자동 파싱 (format='mixed' 적용하여 2020, 2021년 등 하이픈/슬래시 형태 모두 처리)
             date_col = None
             for col in ['마감일자/출고일자', '출고일자', '마감일자', '일자']:
                 if col in df.columns:
@@ -120,32 +119,18 @@ def load_data(uploaded_files=None):
                     break
             
             if date_col:
-                dt_series = pd.to_datetime(df[date_col], errors='coerce')
+                dt_series = pd.to_datetime(df[date_col], format='mixed', errors='coerce')
                 df['연도'] = dt_series.dt.year
                 df['월'] = dt_series.dt.month
             
-            # 출고일자에서 추출하지 못한 경우 기존 컬럼/파일명 활용
-            if '연도' not in df.columns or df['연도'].isna().all():
-                if '연도' in df.columns:
-                    df['연도'] = pd.to_numeric(df['연도'], errors='coerce')
-                elif '매출인식年' in df.columns:
-                    df['연도'] = pd.to_numeric(df['매출인식年'], errors='coerce')
-                else:
-                    year_match = re.search(r'20\d{2}', file_name)
-                    df['연도'] = int(year_match.group()) if year_match else None
-                    
-            if '월' not in df.columns or df['월'].isna().all():
-                if '월' in df.columns:
-                    df['월'] = pd.to_numeric(df['월'], errors='coerce')
-                elif '매출인식月' in df.columns:
-                    df['월'] = pd.to_numeric(df['매출인식月'], errors='coerce')
-                else:
-                    df['월'] = 1
-                    
-            df['연도'] = df['연도'].fillna(2026).astype(int)
+            # 파싱 안 된 행은 파일명에서 연도 찾기
+            year_match = re.search(r'20\d{2}', file_name)
+            fallback_year = int(year_match.group()) if year_match else 2026
+            
+            df['연도'] = df['연도'].fillna(fallback_year).astype(int)
             df['월'] = df['월'].fillna(1).astype(int)
                 
-            # ★ 유연한 기기 필터링 (진단기기 / 완제품 / Level 2 기기 포함)
+            # 유연한 기기 필터링 (진단기기 / 완제품 / Level 2 기기)
             is_device = (
                 (df['Level 1'].isin(['진단기기', '완제품'])) | 
                 (df['Level 2'].str.contains('기기', na=False))
@@ -245,8 +230,8 @@ if df is not None and len(df) > 0:
     # ---------------------------------------------------------
     st.subheader("🗓️ 2. 연도별 / 월별 세부 출고 현황표")
     
-    # 실제 데이터에 가용한 연도 추출
-    available_years = sorted([int(y) for y in country_df['연도'].dropna().unique()], reverse=True)
+    # 2018~2026 연도 드롭다운 구성 (실제 존재하는 모든 연도)
+    available_years = sorted([int(y) for y in country_df['연도'].dropna().unique() if 2015 <= int(y) <= 2026], reverse=True)
     
     if available_years:
         selected_year = st.selectbox("📅 연도 선택:", options=available_years, index=0)
