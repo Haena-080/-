@@ -2,15 +2,33 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# 1. 페이지 기본 설정
+# 1. 페이지 설정
 st.set_page_config(
-    page_title="국가별 기기 출고 누적 분석 플랫폼",
-    page_icon="📊",
+    page_title="고객사/국가별 기기 출고 누적 분석 플랫폼",
+    page_icon="📈",
     layout="wide"
 )
 
-st.title("📊 국가별 기기 출고 누적 분석 플랫폼")
-st.markdown("매달 매출 DB 엑셀 파일을 업로드하면 **국가별/월별 기기 출고량 및 누적 수치**를 자동으로 집계합니다.")
+st.title("📈 고객사/국가별 기기 출고 및 설치 누적 분석 플랫폼")
+st.markdown("매출 DB를 기반으로 **국가 내 고객사별 기기 라인업(AFIAS, ichroma 등) 출고 현황**을 자동 집계합니다.")
+
+# 기기 라인업 자동 분류 함수
+def classify_device_line(item_name):
+    name = str(item_name).upper()
+    if 'AFIAS' in name:
+        return 'AFIAS 라인'
+    elif 'ICHROMA' in name:
+        return 'ichroma 라인'
+    elif 'HEMOCHROMA' in name:
+        return 'hemochroma 라인'
+    elif 'VET' in name:
+        return 'Vet (동물용) 라인'
+    elif 'CHAMBER' in name or 'I-CHAMBER' in name:
+        return 'i-Chamber (배양기)'
+    elif 'THERMO' in name:
+        return 'Thermo-block'
+    else:
+        return '기타 기기'
 
 # 2. 파일 업로더
 uploaded_file = st.file_uploader("최신 매출 DB 엑셀 파일 (.xlsx)을 업로드하세요", type=["xlsx"])
@@ -30,119 +48,164 @@ if uploaded_file is not None:
         df['Level 1'] = df['Level 1'].astype(str).str.strip()
         df['Level 2'] = df['Level 2'].astype(str).str.strip()
         df['수출국가'] = df['수출국가'].astype(str).str.strip()
+        df['고객'] = df['고객'].astype(str).str.strip()
+        df['담당자'] = df['담당자'].astype(str).str.strip()
+        df['팀 분류'] = df['팀 분류'].astype(str).str.strip()
         df['매출인식月'] = pd.to_numeric(df['매출인식月'], errors='coerce')
         df['수량환산'] = pd.to_numeric(df['수량환산'], errors='coerce').fillna(0)
         
-        # 완제품 & 기기 데이터만 추출
+        # 완제품 기기 필터링 및 기기 라인 분류
         devices_df = df[(df['Level 1'] == '완제품') & (df['Level 2'] == '기기')].copy()
+        devices_df['기기 라인'] = devices_df['품명'].apply(classify_device_line)
         
-        st.success(f"✅ 데이터 로드 완료! (총 {len(devices_df):,} 건의 기기 출고 내역)")
+        st.success(f"✅ 데이터 로드 완료! (총 {len(devices_df):,} 건의 완제품 기기 출고 데이터)")
         
-        # 사이드바 필터
-        st.sidebar.header("🔍 필터 옵션")
-        selected_countries = st.sidebar.multiselect(
-            "국가 선택 (미선택 시 전체)",
-            options=sorted(devices_df['수출국가'].unique()),
-            default=[]
-        )
+        # 3. 사이드바 영업 필터
+        st.sidebar.header("🔍 영업 분석 필터")
         
-        selected_products = st.sidebar.multiselect(
-            "제품군 선택 (미선택 시 전체)",
-            options=sorted(devices_df['제품군'].dropna().unique()),
-            default=[]
-        )
+        # 팀 / 담당자 필터
+        teams = sorted([t for t in devices_df['팀 분류'].unique() if t and t != 'nan'])
+        selected_teams = st.sidebar.multiselect("담당 팀 선택", options=teams, default=[])
         
-        # 필터링 적용
-        filtered_df = devices_df.copy()
-        if selected_countries:
-            filtered_df = filtered_df[filtered_df['수출국가'].isin(selected_countries)]
-        if selected_products:
-            filtered_df = filtered_df[filtered_df['제품군'].isin(selected_products)]
+        if selected_teams:
+            devices_df = devices_df[devices_df['팀 분류'].isin(selected_teams)]
             
-        # 월별 피벗 테이블 생성
-        pivot_monthly = filtered_df.pivot_table(
-            index='수출국가',
-            columns='매출인식月',
-            values='수량환산',
-            aggfunc='sum',
-            fill_value=0
-        )
+        managers = sorted([m for m in devices_df['담당자'].unique() if m and m != 'nan'])
+        selected_managers = st.sidebar.multiselect("영업 담당자 선택", options=managers, default=[])
         
-        # 컬럼 정렬 (월 순서)
-        month_cols = sorted([c for c in pivot_monthly.columns if isinstance(c, (int, float)) and not pd.isna(c)])
-        pivot_monthly = pivot_monthly[month_cols]
-        pivot_monthly.columns = [f"{int(m)}월" for m in month_cols]
+        if selected_managers:
+            devices_df = devices_df[devices_df['담당자'].isin(selected_managers)]
+            
+        # 국가 / 고객 / 기기 라인 필터
+        countries = sorted(devices_df['수출국가'].unique())
+        selected_countries = st.sidebar.multiselect("수출 국가 선택", options=countries, default=[])
         
-        # 월별 합계 및 누적 계산
-        pivot_monthly['총 출고량'] = pivot_monthly.sum(axis=1)
-        pivot_monthly = pivot_monthly.sort_values(by='총 출고량', ascending=False)
+        if selected_countries:
+            devices_df = devices_df[devices_df['수출국가'].isin(selected_countries)]
+            
+        customers = sorted(devices_df['고객'].unique())
+        selected_customers = st.sidebar.multiselect("고객사 선택", options=customers, default=[])
         
-        # 누적 집계 테이블 (Cumsum)
-        pivot_cum = pivot_monthly.drop(columns=['총 출고량']).cumsum(axis=1)
-        pivot_cum['최종 누적량'] = pivot_monthly['총 출고량']
+        if selected_customers:
+            devices_df = devices_df[devices_df['고객'].isin(selected_customers)]
+            
+        device_lines = sorted(devices_df['기기 라인'].unique())
+        selected_lines = st.sidebar.multiselect("기기 라인 선택", options=device_lines, default=[])
         
-        # 3. 주요 요약 지표 (KPI)
-        st.subheader("📌 주요 지표 (KPI)")
+        if selected_lines:
+            devices_df = devices_df[devices_df['기기 라인'].isin(selected_lines)]
+
+        # 월 컬럼 추출
+        month_cols = sorted([int(m) for m in devices_df['매출인식月'].dropna().unique()])
+        
+        # 4. 주요 요약 지표 (KPI Cards)
+        st.subheader("📌 영업 핵심 지표")
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("총 출고 국가 수", f"{len(pivot_monthly)} 개국")
-        col2.metric("총 기기 출고 수량", f"{int(pivot_monthly['총 출고량'].sum()):,} 대")
-        
-        top_country = pivot_monthly.index[0] if len(pivot_monthly) > 0 else "-"
-        top_qty = pivot_monthly['총 출고량'].iloc[0] if len(pivot_monthly) > 0 else 0
-        col3.metric("최대 출고 국가", top_country, f"{int(top_qty):,} 대")
-        col4.metric("집계 월 범위", f"{int(min(month_cols))}월 ~ {int(max(month_cols))}월")
+        col1.metric("총 거래 국가 수", f"{devices_df['수출국가'].nunique():,} 개국")
+        col2.metric("총 거래 고객사 수", f"{devices_df['고객'].nunique():,} 개 고객사")
+        col3.metric("총 기기 출고 수량", f"{int(devices_df['수량환산'].sum()):,} 대")
+        col4.metric("집계 월 범위", f"{min(month_cols)}월 ~ {max(month_cols)}월")
         
         st.write("---")
         
-        # 4. 시각화 탭 분리
-        tab1, tab2, tab3 = st.tabs(["📈 월별 누적 추이 차트", "📋 상세 데이터 테이블", "📊 국가별 순위 차트"])
+        # 5. 분석 탭
+        tab1, tab2, tab3 = st.tabs(["👥 고객사별 기기 믹스 현황", "📆 월별/누적 출고 추이", "🗺️ 국가-고객 상세 드릴다운"])
         
         with tab1:
-            st.subheader("국가별 기기 출고 누적 추이")
-            # 누적 데이터 재구성 (Plotly 선 그래프용)
-            cum_plot_df = pivot_cum.drop(columns=['최종 누적량']).reset_index().melt(
-                id_vars='수출국가', var_name='월', value_name='누적 출고량'
-            )
+            st.subheader("고객사별 기기 라인업 출고 수량 및 비중")
             
-            top_10_countries = pivot_monthly.head(10).index.tolist()
-            show_top = st.checkbox("상위 10개국만 보기", value=True)
-            if show_top:
-                cum_plot_df = cum_plot_df[cum_plot_df['수출국가'].isin(top_10_countries)]
-                
-            fig_line = px.line(
-                cum_plot_df, x='월', y='누적 출고량', color='수출국가', markers=True,
-                title="월별 기기 출고 누적 그래프"
+            # 고객 x 기기 라인 피벗
+            cust_line_pivot = devices_df.pivot_table(
+                index=['수출국가', '고객'],
+                columns='기기 라인',
+                values='수량환산',
+                aggfunc='sum',
+                fill_value=0
             )
-            st.plotly_chart(fig_line, use_container_width=True)
+            cust_line_pivot['합계'] = cust_line_pivot.sum(axis=1)
+            cust_line_pivot = cust_line_pivot.sort_values(by='합계', ascending=False)
+            
+            st.dataframe(cust_line_pivot.style.format("{:,.0f}"), use_container_width=True)
+            
+            # 상위 15개 고객사 기기 믹스 차트
+            st.subheader("상위 15개 고객사의 기기 라인업 믹스")
+            top_15_cust = cust_line_pivot.head(15).drop(columns=['합계']).reset_index()
+            top_15_melted = top_15_cust.melt(id_vars=['수출국가', '고객'], var_name='기기 라인', value_name='수량')
+            
+            fig_mix = px.bar(
+                top_15_melted,
+                x='고객',
+                y='수량',
+                color='기기 라인',
+                title="상위 고객사별 기기 라인 출고 분포 (Stacked Bar)",
+                text_auto=',.0f'
+            )
+            fig_mix.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig_mix, use_container_width=True)
             
         with tab2:
-            st.subheader("1. 월별 단독 출고 수량 (대)")
-            st.dataframe(pivot_monthly.style.format("{:,.0f}"), use_container_width=True)
+            st.subheader("고객사별 월별 단독 및 누적 출고량")
             
-            st.subheader("2. 월별 누적 출고 수량 (대)")
-            st.dataframe(pivot_cum.style.format("{:,.0f}"), use_container_width=True)
+            cust_monthly = devices_df.pivot_table(
+                index=['수출국가', '고객'],
+                columns='매출인식月',
+                values='수량환산',
+                aggfunc='sum',
+                fill_value=0
+            )
             
-            # CSV 다운로드 기능
-            csv = pivot_cum.to_csv().encode('utf-8-sig')
+            month_names = [f"{int(m)}월" for m in sorted(cust_monthly.columns)]
+            cust_monthly.columns = month_names
+            cust_monthly['총 누적 출고량'] = cust_monthly.sum(axis=1)
+            cust_monthly = cust_monthly.sort_values(by='총 누적 출고량', ascending=False)
+            
+            # 월별 누적 테이블
+            cust_cum = cust_monthly[month_names].cumsum(axis=1)
+            cust_cum['최종 누적량'] = cust_monthly['총 누적 출고량']
+            
+            st.markdown("##### 1. 고객사별 월별 출고량 (대)")
+            st.dataframe(cust_monthly.style.format("{:,.0f}"), use_container_width=True)
+            
+            st.markdown("##### 2. 고객사별 월별 누적 출고량 (대)")
+            st.dataframe(cust_cum.style.format("{:,.0f}"), use_container_width=True)
+            
+            # CSV 다운로드
+            csv = cust_cum.to_csv().encode('utf-8-sig')
             st.download_button(
-                label="📥 누적 출고 데이터 (CSV) 다운로드",
+                label="📥 고객사별 누적 데이터 CSV 다운로드",
                 data=csv,
-                file_name="국가별_기기_누적출고현황.csv",
+                file_name="고객사별_기기_누적출고현황.csv",
                 mime="text/csv"
             )
             
         with tab3:
-            st.subheader("상위 15개국 총 출고량 비교")
-            fig_bar = px.bar(
-                pivot_monthly.head(15).reset_index(),
-                x='수출국가', y='총 출고량', color='총 출고량',
-                color_continuous_scale='Blues',
-                text='총 출고량'
-            )
-            fig_bar.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-            st.plotly_chart(fig_bar, use_container_width=True)
+            st.subheader("특정 국가 내 고객사별 기기 설치/출고 현황 드릴다운")
+            target_country = st.selectbox("분석할 국가를 선택하세요", options=countries)
+            
+            country_df = devices_df[devices_df['수출국가'] == target_country]
+            
+            if len(country_df) > 0:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.write(f"**[{target_country}] 기기 라인업 비중**")
+                    fig_pie = px.pie(country_df, names='기기 라인', values='수량환산', hole=0.4)
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                with c2:
+                    st.write(f"**[{target_country}] 고객사별 기기 출고량**")
+                    cust_bar = country_df.groupby(['고객', '기기 라인'])['수량환산'].sum().reset_index()
+                    fig_cbar = px.bar(cust_bar, x='고객', y='수량환산', color='기기 라인', barmode='group', text_auto=',.0f')
+                    st.plotly_chart(fig_cbar, use_container_width=True)
+                    
+                st.write(f"**[{target_country}] 상세 출고 품목 내역**")
+                st.dataframe(
+                    country_df[['매출인식月', '고객', '품번', '품명', '기기 라인', '수량환산', '담당자']]
+                    .sort_values(by=['고객', '매출인식月']),
+                    use_container_width=True
+                )
+            else:
+                st.info("선택한 국가의 데이터가 존재하지 않습니다.")
 
     except Exception as e:
-        st.error(f"파일을 처리하는 중 오류가 발생했습니다: {e}")
+        st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
 else:
-    st.info("👆 상단의 [Browse files] 버튼을 눌러 최신 `매출 DB.xlsx` 파일을 업로드해주세요.")
+    st.info("👆 상단의 [Browse files] 버튼을 눌러 매출 DB 엑셀 파일을 업로드해주세요.")
