@@ -1,192 +1,225 @@
-    base = data[data["year"].isin(selected_years)] if selected_years else data.iloc[0:0]
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import glob
+import os
+import re
 
-    regions = sorted([x for x in base["region"].dropna().unique() if x != "Unknown"])
-    selected_regions = st.multiselect("Region", regions, default=[])
-    if selected_regions:
-        base = base[base["region"].isin(selected_regions)]
-
-    countries = sorted([x for x in base["country"].dropna().unique() if x != "Unknown"])
-    country_options = ["All countries"] + countries
-    selected_country = st.selectbox("Country", country_options, index=0)
-
-    country_scope = base if selected_country == "All countries" else base[base["country"].eq(selected_country)]
-    companies = sorted([x for x in country_scope["company"].dropna().unique() if x != "Unknown company"])
-    company_options = ["All companies"] + companies
-    selected_company = st.selectbox("Company", company_options, index=0)
-    st.markdown('<div class="filter-caption">Company list changes automatically with the selected country.</div>', unsafe_allow_html=True)
-
-    include_free = st.checkbox("Include free-of-charge rows", value=True)
-    st.markdown("---")
-    st.caption(f"Loaded {len(data):,} standardized rows from {data['source_file'].nunique()} file(s)")
-
-filtered = country_scope.copy()
-if selected_company != "All companies":
-    filtered = filtered[filtered["company"].eq(selected_company)]
-if not include_free:
-    # 구분2 is typically 유상/무상; unknown structures are left untouched.
-    filtered = filtered[~filtered["sales_type"].str.contains("무상|FOC|FREE", case=False, regex=True, na=False)]
-
-metric_valid = filtered[metric].notna()
-metric_df = filtered.loc[metric_valid].copy()
-
-# -----------------------------
-# Header
-# -----------------------------
-scope_parts = []
-if selected_country != "All countries": scope_parts.append(selected_country)
-if selected_company != "All companies": scope_parts.append(selected_company)
-scope_text = " · ".join(scope_parts) if scope_parts else "Global portfolio"
-
-st.markdown('<div class="dashboard-title">Global Sales Intelligence</div>', unsafe_allow_html=True)
-st.markdown(
-    f'<div class="dashboard-subtitle">{scope_text} &nbsp;|&nbsp; {metric_label} &nbsp;|&nbsp; {min(selected_years) if selected_years else "—"}–{max(selected_years) if selected_years else "—"}</div>',
-    unsafe_allow_html=True,
+# ---------------------------------------------------------
+# 1. 페이지 기본 설정
+# ---------------------------------------------------------
+st.set_page_config(
+    page_title="아프리카 국가별 기기 출고 현황 (2018~2026.08)",
+    page_icon="🗺️",
+    layout="wide"
 )
 
-if load_errors:
-    with st.expander("Some files could not be loaded"):
-        for err in load_errors:
-            st.write(err)
-
-if metric == "sales_usd":
-    coverage = filtered["currency"].eq("USD").mean() if len(filtered) else 0
-    if coverage < 0.85:
-        st.warning(f"USD view covers {coverage:.0%} of the currently filtered rows. Use KRW for a fully comparable total across mixed currencies.")
-
-# -----------------------------
-# KPI strip
-# -----------------------------
-sales_total = metric_df[metric].sum(min_count=1)
-qty_total = filtered["qty"].sum()
-company_count = filtered["company"].replace("Unknown company", np.nan).nunique()
-country_count = filtered["country"].replace("Unknown", np.nan).nunique()
-sku_count = filtered["item_code"].replace("", np.nan).nunique()
-
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("Sales", compact_money(sales_total, metric), yoy_delta(metric_df, metric))
-k2.metric("Quantity", f"{qty_total:,.0f}")
-k3.metric("Active companies", f"{company_count:,}")
-k4.metric("Countries", f"{country_count:,}")
-k5.metric("Active SKUs", f"{sku_count:,}")
-
-# -----------------------------
-# Main tabs
-# -----------------------------
-t_overview, t_country, t_customer, t_product, t_quality = st.tabs(
-    ["Overview", "Country", "Company", "Product Mix", "Data Quality"]
-)
-
-with t_overview:
-    left, right = st.columns([1.45, 1])
-    yearly = metric_df.groupby("year", as_index=False)[metric].sum(min_count=1).dropna()
-    fig = px.bar(yearly, x="year", y=metric, text_auto=".3s")
-    fig.update_traces(marker_color="#2E6BFF", hovertemplate=f"Year %{{x}}<br>{axis_money(metric)}%{{y:,.0f}}<extra></extra>")
-    fig.update_yaxes(tickprefix=axis_money(metric))
-    left.plotly_chart(style_figure(fig, "Sales by year"), use_container_width=True, config=PLOTLY_CONFIG)
-
-    top_country = metric_df.groupby("country", as_index=False)[metric].sum(min_count=1).sort_values(metric, ascending=False).head(10)
-    fig = px.bar(top_country.sort_values(metric), x=metric, y="country", orientation="h")
-    fig.update_traces(marker_color="#142B4A", hovertemplate=f"%{{y}}<br>{axis_money(metric)}%{{x:,.0f}}<extra></extra>")
-    fig.update_xaxes(tickprefix=axis_money(metric))
-    right.plotly_chart(style_figure(fig, "Top countries"), use_container_width=True, config=PLOTLY_CONFIG)
-
-    left, right = st.columns([1.45, 1])
-    monthly = metric_df.dropna(subset=["year", "month"]).groupby(["year", "month"], as_index=False)[metric].sum(min_count=1)
-    fig = px.line(monthly, x="month", y=metric, color="year", markers=True)
-    fig.update_layout(legend_title_text="Year")
-    fig.update_xaxes(dtick=1)
-    fig.update_yaxes(tickprefix=axis_money(metric))
-    left.plotly_chart(style_figure(fig, "Monthly trend"), use_container_width=True, config=PLOTLY_CONFIG)
-
-    top_company = metric_df.groupby(["country", "company"], as_index=False)[metric].sum(min_count=1).sort_values(metric, ascending=False).head(12)
-    top_company["label"] = top_company["company"].str.slice(0, 34)
-    fig = px.bar(top_company.sort_values(metric), x=metric, y="label", orientation="h", hover_data=["country", "company"])
-    fig.update_traces(marker_color="#6C8FF8")
-    fig.update_xaxes(tickprefix=axis_money(metric))
-    right.plotly_chart(style_figure(fig, "Top companies"), use_container_width=True, config=PLOTLY_CONFIG)
-
-with t_country:
-    if selected_country == "All countries":
-        st.info("Select a country in the sidebar to open the country-level commercial view.")
+# ---------------------------------------------------------
+# 2. 기기 플랫폼 세부 정제 및 통일 함수
+# ---------------------------------------------------------
+def classify_device_line(item_name):
+    name = str(item_name).upper().replace(' ', '').replace('-', '').replace('_', '')
+    
+    # AFIAS 세부 분류
+    if 'AFIAS10' in name or 'AFIAS-10' in name:
+        return 'AFIAS-10'
+    elif 'AFIAS6' in name or 'AFIAS-6' in name:
+        return 'AFIAS-6'
+    elif 'AFIAS3' in name or 'AFIAS-3' in name:
+        return 'AFIAS-3'
+    elif 'AFIAS1' in name or 'AFIAS-1' in name or 'AFIAS' in name:
+        return 'AFIAS-1 / 기타 AFIAS'
+    
+    # ichroma 세부 분류 및 II/2 표기 통일
+    elif 'ICHROMA3' in name or 'ICHROMAIII' in name:
+        return 'ichroma III'
+    elif 'ICHROMA2' in name or 'ICHROMAII' in name or 'ICHROMA' in name:
+        return 'ichroma II'
+    
+    # 기타 플랫폼 분류
+    elif 'CHEMICHROMA' in name:
+        return 'Chemichroma'
+    elif 'HEMOCHROMA' in name:
+        return 'hemochroma'
+    elif 'VET' in name:
+        return 'Vet (동물용)'
+    elif 'CHAMBER' in name:
+        return 'i-Chamber'
+    elif 'THERMO' in name:
+        return 'Thermo-block'
     else:
-        cscope = filtered.copy()
-        a, b = st.columns([1.35, 1])
-        company_sales = cscope[cscope[metric].notna()].groupby("company", as_index=False)[metric].sum(min_count=1).sort_values(metric, ascending=False)
-        fig = px.bar(company_sales.head(15).sort_values(metric), x=metric, y="company", orientation="h")
-        fig.update_traces(marker_color="#2E6BFF")
-        fig.update_xaxes(tickprefix=axis_money(metric))
-        a.plotly_chart(style_figure(fig, f"{selected_country} · company contribution"), use_container_width=True, config=PLOTLY_CONFIG)
+        return '기타 기기'
 
-        company_year = cscope[cscope[metric].notna()].groupby(["year", "company"], as_index=False)[metric].sum(min_count=1)
-        top_names = company_sales.head(7)["company"].tolist()
-        company_year = company_year[company_year["company"].isin(top_names)]
-        fig = px.line(company_year, x="year", y=metric, color="company", markers=True)
-        fig.update_yaxes(tickprefix=axis_money(metric))
-        b.plotly_chart(style_figure(fig, "Company trend"), use_container_width=True, config=PLOTLY_CONFIG)
+# ---------------------------------------------------------
+# 3. 데이터 로드 (2018 ~ 2026.08)
+# ---------------------------------------------------------
+@st.cache_data(ttl=3600)
+def load_data(uploaded_files=None):
+    combined_dfs = []
+    local_files = glob.glob("data/*.xlsx") + glob.glob("*.xlsx")
+    target_files = uploaded_files if (uploaded_files and len(uploaded_files) > 0) else local_files
+    
+    if not target_files:
+        return None
+        
+    for file in target_files:
+        file_name = file.name if hasattr(file, 'name') else os.path.basename(file)
+        try:
+            xls = pd.ExcelFile(file)
+            df_raw = pd.read_excel(file, sheet_name=xls.sheet_names[0])
+            
+            df = df_raw.iloc[4:].copy()
+            df.columns = df_raw.iloc[3].values
+            
+            df['Level 1'] = df['Level 1'].astype(str).str.strip()
+            df['Level 2'] = df['Level 2'].astype(str).str.strip()
+            df['수출국가'] = df['수출국가'].astype(str).str.strip().str.title()
+            df['수량환산'] = pd.to_numeric(df['수량환산'], errors='coerce').fillna(0)
+            
+            # 연도 추출
+            if '연도' in df.columns:
+                df['연도'] = pd.to_numeric(df['연도'], errors='coerce')
+            elif '매출인식年' in df.columns:
+                df['연도'] = pd.to_numeric(df['매출인식年'], errors='coerce')
+            else:
+                year_match = re.search(r'20\d{2}', file_name)
+                df['연도'] = int(year_match.group()) if year_match else 2026
+                
+            # 월 추출
+            if '월' in df.columns:
+                df['월'] = pd.to_numeric(df['월'], errors='coerce').fillna(1).astype(int)
+            elif '매출인식月' in df.columns:
+                df['월'] = pd.to_numeric(df['매출인식月'], errors='coerce').fillna(1).astype(int)
+            else:
+                df['월'] = 1
+                
+            # 완제품 기기 필터링 및 플랫폼 명칭 정제
+            devices = df[(df['Level 1'] == '완제품') & (df['Level 2'] == '기기')].copy()
+            devices['기기 플랫폼'] = devices['품명'].apply(classify_device_line)
+            devices['연도'] = devices['연도'].astype(int)
+            
+            combined_dfs.append(devices)
+        except Exception:
+            continue
+        
+    return pd.concat(combined_dfs, ignore_index=True) if combined_dfs else None
 
-        st.markdown("### Company performance")
-        table = cscope.groupby("company", as_index=False).agg(
-            Sales=(metric, "sum"),
-            Quantity=("qty", "sum"),
-            SKUs=("item_code", "nunique"),
-            First_Sale=("date", "min"),
-            Last_Sale=("date", "max"),
-        ).sort_values("Sales", ascending=False)
-        table["Share %"] = np.where(table["Sales"].sum() != 0, table["Sales"] / table["Sales"].sum() * 100, 0)
-        st.dataframe(
-            table,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Sales": st.column_config.NumberColumn("Sales", format="$%.0f" if metric == "sales_usd" else "₩%.0f"),
-                "Quantity": st.column_config.NumberColumn("Qty", format="%.0f"),
-                "Share %": st.column_config.ProgressColumn("Share", min_value=0, max_value=100, format="%.1f%%"),
-                "First_Sale": st.column_config.DateColumn("First sale"),
-                "Last_Sale": st.column_config.DateColumn("Last sale"),
-            },
+# ---------------------------------------------------------
+# 4. 메인 화면
+# ---------------------------------------------------------
+st.title("🗺️ 아프리카 국가별 기기 출고 현황 (2018 ~ 2026.08)")
+
+uploaded_files = st.sidebar.file_uploader("엑셀 데이터 업로드", type=["xlsx"], accept_multiple_files=True)
+df = load_data(uploaded_files)
+
+if df is not None and len(df) > 0:
+    
+    # ---------------------------------------------------------
+    # SECTION 1. 아프리카 지도 & 국가 선택
+    # ---------------------------------------------------------
+    st.subheader("🌐 1. 아프리카 지도에서 국가 선택")
+    st.caption("지도의 국가를 직접 클릭하거나, 오른쪽 목록에서 선택하면 해당 국가의 플랫폼별 출고 수량이 집계됩니다.")
+    
+    all_countries = sorted([c for c in df['수출국가'].unique() if c and c != 'Nan'])
+    
+    col_map, col_select = st.columns([6, 4])
+    
+    # 지도 데이터 집계
+    map_df = df.groupby('수출국가')['수량환산'].sum().reset_index()
+    
+    with col_map:
+        fig_map = px.choropleth(
+            map_df,
+            locationmode='country names',
+            locations='수출국가',
+            color='수량환산',
+            hover_name='수출국가',
+            color_continuous_scale='Purples',
+            scope='africa',
+            labels={'수량환산': '출고 수량(대)'}
+        )
+        fig_map.update_geos(
+            showcountries=True, countrycolor="#B0BEC5",
+            showland=True, landcolor="#F5F5F5",
+            fitbounds="locations"
+        )
+        fig_map.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=420)
+        
+        # 지도 클릭 연동 이벤트 capture
+        map_event = st.plotly_chart(
+            fig_map, 
+            use_container_width=True, 
+            on_select="rerun", 
+            selection_mode="points"
         )
 
-with t_customer:
-    if selected_company == "All companies":
-        st.info("Select a company in the sidebar. The company list is already filtered by the selected country.")
+    # 지도의 클릭한 국가 감지
+    clicked_country = None
+    if map_event and "selection" in map_event and "points" in map_event["selection"]:
+        points = map_event["selection"]["points"]
+        if len(points) > 0 and "location" in points[0]:
+            clicked_country = points[0]["location"]
+
+    with col_select:
+        # 지도를 클릭한 경우 해당 국가로 자동 선택
+        default_index = 0
+        if clicked_country and clicked_country in all_countries:
+            default_index = all_countries.index(clicked_country) + 1
+
+        selected_country = st.selectbox(
+            "🌍 조회 국가 선택:", 
+            options=["전체 국가"] + all_countries, 
+            index=default_index
+        )
+        
+        # 선택된 국가 데이터 필터링
+        country_df = df if selected_country == "전체 국가" else df[df['수출국가'] == selected_country]
+
+        st.markdown(f"##### 📊 **[{selected_country}] 플랫폼별 누적 현황 (2018~2026.08)**")
+        platform_summary = country_df.groupby('기기 플랫폼')['수량환산'].sum().reset_index()
+        platform_summary.columns = ['기기 플랫폼', '출고 수량 (대)']
+        
+        total_sum = platform_summary['출고 수량 (대)'].sum()
+        
+        st.dataframe(
+            platform_summary.sort_values(by='출고 수량 (대)', ascending=False),
+            use_container_width=True,
+            hide_index=True
+        )
+        st.success(f"**[{selected_country}] 총 누적 수량: {int(total_sum):,} 대**")
+
+    st.markdown("---")
+
+    # ---------------------------------------------------------
+    # SECTION 2. 연도 선택 & 월별 출고 현황 (표 중심)
+    # ---------------------------------------------------------
+    st.subheader("🗓️ 2. 연도별 / 월별 세부 출고 현황표")
+    
+    available_years = sorted([int(y) for y in country_df['연도'].unique()], reverse=True)
+    selected_year = st.selectbox("📅 연도 선택 (2018~2026):", options=available_years, index=0)
+    
+    year_df = country_df[country_df['연도'] == selected_year]
+    
+    if len(year_df) > 0:
+        month_pivot = year_df.pivot_table(
+            index='월',
+            columns='기기 플랫폼',
+            values='수량환산',
+            aggfunc='sum',
+            fill_value=0
+        )
+        
+        month_pivot = month_pivot.reindex(range(1, 13), fill_value=0)
+        month_pivot.index = [f"{m}월" for m in month_pivot.index]
+        month_pivot['월별 합계'] = month_pivot.sum(axis=1)
+        
+        st.markdown(f"##### 📋 **{selected_year}년도 [{selected_country}] 월별 기기 출고 현황표 (단위: 대)**")
+        st.dataframe(
+            month_pivot.style.format("{:,.0f}"),
+            use_container_width=True
+        )
     else:
-        s = filtered.copy()
-        a, b = st.columns([1.4, 1])
-        trend = s[s[metric].notna()].dropna(subset=["year", "month"]).groupby(["year", "month"], as_index=False)[metric].sum(min_count=1)
-        fig = px.line(trend, x="month", y=metric, color="year", markers=True)
-        fig.update_xaxes(dtick=1)
-        fig.update_yaxes(tickprefix=axis_money(metric))
-        a.plotly_chart(style_figure(fig, "Monthly sales pattern"), use_container_width=True, config=PLOTLY_CONFIG)
+        st.warning(f"{selected_year}년도에는 [{selected_country}]의 출고 데이터가 없습니다.")
 
-        prod = s[s[metric].notna()].groupby("level5", as_index=False)[metric].sum(min_count=1).sort_values(metric, ascending=False).head(10)
-        fig = px.bar(prod.sort_values(metric), x=metric, y="level5", orientation="h")
-        fig.update_traces(marker_color="#6C8FF8")
-        fig.update_xaxes(tickprefix=axis_money(metric))
-        b.plotly_chart(style_figure(fig, "Top product markers / L5"), use_container_width=True, config=PLOTLY_CONFIG)
-
-        st.markdown("### Product detail")
-        ptab = s.groupby(["item_code", "item_name", "level4", "level5"], as_index=False).agg(
-            Sales=(metric, "sum"), Quantity=("qty", "sum"), Last_Sale=("date", "max")
-        ).sort_values("Sales", ascending=False)
-        st.dataframe(ptab, use_container_width=True, hide_index=True)
-
-with t_product:
-    hierarchy = [c for c in ["level1", "level2", "level3", "level4", "level5"] if filtered[c].ne("Unknown").any()]
-    if not hierarchy:
-        st.info("No product hierarchy columns were detected in the current selection.")
-    else:
-        tree_df = filtered[filtered[metric].notna()].copy()
-        # Avoid huge treemaps: aggregate first and keep top branches.
-        agg = tree_df.groupby(hierarchy, as_index=False)[metric].sum(min_count=1)
-        if len(agg) > 500:
-            agg = agg.nlargest(500, metric)
-        fig = px.treemap(agg, path=hierarchy, values=metric)
-        fig.update_traces(root_color="#F2F4F7")
-        st.plotly_chart(style_figure(fig, "Product portfolio structure"), use_container_width=True, config=PLOTLY_CONFIG)
-
-        left, right = st.columns(2)
-        l4 = filtered[filtered[metric].notna()].groupby("level4", as_index=False)[metric].sum(min_count=1).sort_values(metric, ascending=False).head(12)
-        fig = px.bar(l4.sort_values(metric), x=metric, y="level4", orientation="h")
-        fig.update_traces(marker_color="#142B4A")
-        fig.update_xaxes(tickprefix=axis_money(metric))
-        left.plotly_chart(style_figure(fig, "Top Level 4 categories"), use_container_width=True, config=PLOTLY_CONFIG)
+else:
+    st.info("💡 `data/` 폴더에 엑셀 데이터 파일이 있거나 왼쪽 사이드바에 엑셀을 업로드해 주세요.")
