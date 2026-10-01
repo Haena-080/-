@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import pydeck as pdk
 import glob
 import os
 import re
@@ -9,13 +9,45 @@ import re
 # 1. 페이지 기본 설정
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="아프리카 국가별 & 연도/월별 기기 출고 현황",
-    page_icon="📋",
+    page_title="아프리카 기기 출고 현황 (2018~2026.08)",
+    page_icon="🗺️",
     layout="wide"
 )
 
 # ---------------------------------------------------------
-# 2. 기기 라인업 분류 함수
+# 2. 아프리카 주요 국가 위도/경도 좌표 데이터베이스
+# ---------------------------------------------------------
+AFRICA_COORDS = {
+    "Ghana": {"lat": 7.9465, "lon": -1.0232},
+    "Nigeria": {"lat": 9.0820, "lon": 8.6753},
+    "Kenya": {"lat": -0.0236, "lon": 37.9062},
+    "Ethiopia": {"lat": 9.1450, "lon": 40.4897},
+    "Egypt": {"lat": 26.8206, "lon": 30.8025},
+    "South Africa": {"lat": -30.5595, "lon": 22.9375},
+    "Tanzania": {"lat": -6.3690, "lon": 34.8888},
+    "Uganda": {"lat": 1.3733, "lon": 32.2903},
+    "Algeria": {"lat": 28.0339, "lon": 1.6596},
+    "Morocco": {"lat": 31.7917, "lon": -7.0926},
+    "Senegal": {"lat": 14.4974, "lon": -14.4524},
+    "Cote D'Ivoire": {"lat": 7.5400, "lon": -5.5471},
+    "Ivory Coast": {"lat": 7.5400, "lon": -5.5471},
+    "Cameroon": {"lat": 3.8480, "lon": 11.5021},
+    "Rwanda": {"lat": -1.9403, "lon": 29.8739},
+    "Angola": {"lat": -11.2027, "lon": 17.8739},
+    "Sudan": {"lat": 12.8628, "lon": 30.2176},
+    "Zambia": {"lat": -13.1339, "lon": 27.8493},
+    "Zimbabwe": {"lat": -19.0154, "lon": 29.1549},
+    "Tunisia": {"lat": 33.8869, "lon": 9.5375},
+    "Libya": {"lat": 26.3351, "lon": 17.2283},
+    "Madagascar": {"lat": -18.7669, "lon": 46.8691},
+    "Mozambique": {"lat": -18.6657, "lon": 35.5296},
+    "Mali": {"lat": 17.5707, "lon": -3.9962},
+    "DR Congo": {"lat": -4.0383, "lon": 21.7587},
+    "Congo": {"lat": -0.2280, "lon": 15.8277}
+}
+
+# ---------------------------------------------------------
+# 3. 기기 라인업 분류 함수
 # ---------------------------------------------------------
 def classify_device_line(item_name):
     name = str(item_name).upper()
@@ -37,7 +69,7 @@ def classify_device_line(item_name):
         return '기타 기기'
 
 # ---------------------------------------------------------
-# 3. 데이터 로드
+# 4. 데이터 로드 (2018 ~ 2026.08)
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def load_data(uploaded_files=None):
@@ -91,9 +123,9 @@ def load_data(uploaded_files=None):
     return pd.concat(combined_dfs, ignore_index=True) if combined_dfs else None
 
 # ---------------------------------------------------------
-# 4. 메인 대시보드 화면
+# 5. 메인 화면
 # ---------------------------------------------------------
-st.title("📋 아프리카 국가별 & 연도/월별 기기 출고 현황")
+st.title("🗺️ 아프리카 3D 기기 출고 현황 (2018 ~ 2026.08)")
 
 uploaded_files = st.sidebar.file_uploader("엑셀 데이터 업로드", type=["xlsx"], accept_multiple_files=True)
 df = load_data(uploaded_files)
@@ -101,66 +133,56 @@ df = load_data(uploaded_files)
 if df is not None and len(df) > 0:
     
     # ---------------------------------------------------------
-    # SECTION 1. 아프리카 지도 & 국가 선택
+    # SECTION 1. Pydeck 3D 지도 표현
     # ---------------------------------------------------------
-    st.subheader("🗺️ 1. 아프리카 지도에서 국가 선택")
-    st.caption("지도의 국가를 선택하거나 아래 Dropdown에서 국가를 선택하면, 해당 국가의 기기 플랫폼별 출고 수량이 표로 집계됩니다.")
+    st.subheader("🌐 1. 아프리카 국가별 3D 입체 출고 지도 (2018~2026.08 누적)")
+    st.caption("2018년부터 2026년 8월까지의 총 출고 수량이 높낮이와 색상으로 지도에 3D 기둥으로 나타납니다.")
     
-    all_countries = sorted([c for c in df['수출국가'].unique() if c and c != 'Nan'])
+    map_summary = df.groupby('수출국가')['수량환산'].sum().reset_index()
     
-    col_map, col_select = st.columns([6, 4])
+    map_summary['lat'] = map_summary['수출국가'].apply(lambda c: AFRICA_COORDS.get(c, {}).get('lat', 0.0))
+    map_summary['lon'] = map_summary['수출국가'].apply(lambda c: AFRICA_COORDS.get(c, {}).get('lon', 0.0))
+    map_summary = map_summary[(map_summary['lat'] != 0.0) & (map_summary['lon'] != 0.0)]
     
-    # 지도 데이터 준비
-    map_df = df.groupby('수출국가')['수량환산'].sum().reset_index()
+    col_map_view, col_detail_view = st.columns([6, 4])
     
-    with col_map:
-        fig_map = px.choropleth(
-            map_df,
-            locationmode='country names',
-            locations='수출국가',
-            color='수량환산',
-            hover_name='수출국가',
-            color_continuous_scale='Purples',
-            scope='africa',
-            title=""
-        )
-        fig_map.update_geos(
-            showcountries=True, countrycolor="#ced4da",
-            showland=True, landcolor="#f8f9fa",
-            fitbounds="locations"
-        )
-        fig_map.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=380)
-        
-        # 지도에서 선택 capture (on_select 사용)
-        map_event = st.plotly_chart(fig_map, use_container_width=True, on_select="rerun", selection_mode="points")
-
-    # 선택된 국가 감지
-    clicked_country = None
-    if map_event and "selection" in map_event and "points" in map_event["selection"]:
-        points = map_event["selection"]["points"]
-        if len(points) > 0 and "location" in points[0]:
-            clicked_country = points[0]["location"]
-
-    with col_select:
-        # 지도를 클릭했으면 클릭한 국가를 선택, 없으면 기본 드롭다운 사용
-        default_index = 0
-        if clicked_country and clicked_country in all_countries:
-            default_index = all_countries.index(clicked_country) + 1
-
-        selected_country = st.selectbox(
-            "🌍 조회 대상 국가 선택:", 
-            options=["전체 국가"] + all_countries, 
-            index=default_index
+    with col_map_view:
+        layer = pdk.Layer(
+            "ColumnLayer",
+            data=map_summary,
+            get_position=["lon", "lat"],
+            get_elevation="수량환산",
+            elevation_scale=1200,
+            radius=120000,
+            get_fill_color="[수량환산 * 5, 100, 220, 200]",
+            pickable=True,
+            auto_highlight=True,
         )
         
-        # 선택 국가 필터링
-        if selected_country != "전체 국가":
-            country_df = df[df['수출국가'] == selected_country]
-        else:
-            country_df = df.copy()
+        view_state = pdk.ViewState(
+            latitude=2.0,
+            longitude=16.0,
+            zoom=2.8,
+            pitch=45,
+            bearing=0
+        )
+        
+        r = pdk.Deck(
+            layers=[layer],
+            initial_view_state=view_state,
+            tooltip={"text": "국가: {수출국가}\n누적 출고 수량: {수량환산} 대"},
+            map_style="mapbox://styles/mapbox/light-v10"
+        )
+        
+        st.pydeck_chart(r)
 
-        # 기기 플랫폼별 누적 현황 표 표시
-        st.markdown(f"##### 📊 **[{selected_country}] 기기 플랫폼별 누적 출고 수량**")
+    with col_detail_view:
+        all_countries = sorted([c for c in df['수출국가'].unique() if c and c != 'Nan'])
+        selected_country = st.selectbox("🌍 상세 조회 국가 선택:", options=["전체 국가"] + all_countries, index=0)
+        
+        country_df = df if selected_country == "전체 국가" else df[df['수출국가'] == selected_country]
+
+        st.markdown(f"##### 📊 **[{selected_country}] 기기 플랫폼별 누적 현황 (2018~2026.08)**")
         platform_summary = country_df.groupby('기기 플랫폼')['수량환산'].sum().reset_index()
         platform_summary.columns = ['기기 플랫폼', '출고 수량 (대)']
         
@@ -171,24 +193,22 @@ if df is not None and len(df) > 0:
             use_container_width=True,
             hide_index=True
         )
-        st.success(f"**총 누적 출고 수량: {int(total_sum):,} 대**")
+        st.info(f"**[{selected_country}] 총 누적 수량: {int(total_sum):,} 대**")
 
     st.markdown("---")
 
     # ---------------------------------------------------------
     # SECTION 2. 연도 선택 & 월별 출고 현황 (표 중심)
     # ---------------------------------------------------------
-    st.subheader("🗓️ 2. 연도별 / 월별 기기 출고 현황 (표 형식)")
-    st.caption("조회하고 싶은 연도를 선택하면, 선택된 국가에서 **매월 어떤 기기가 몇 대 출고되었는지** 월별 표로 확인하실 수 있습니다.")
+    st.subheader("🗓️ 2. 연도별 / 월별 기기 출고 현황표")
     
+    # 2018~2026 연도 정렬
     available_years = sorted([int(y) for y in country_df['연도'].unique()], reverse=True)
-    selected_year = st.selectbox("📅 연도 선택:", options=available_years, index=0)
+    selected_year = st.selectbox("📅 연도 선택 (2018~2026):", options=available_years, index=0)
     
-    # 선택된 연도의 데이터 필터링
     year_df = country_df[country_df['연도'] == selected_year]
     
     if len(year_df) > 0:
-        # 월별 - 기기 플랫폼 피벗 테이블 생성
         month_pivot = year_df.pivot_table(
             index='월',
             columns='기기 플랫폼',
@@ -197,17 +217,13 @@ if df is not None and len(df) > 0:
             fill_value=0
         )
         
-        # 1월~12월 모든 월 표시되도록 reindex
         month_pivot = month_pivot.reindex(range(1, 13), fill_value=0)
         month_pivot.index = [f"{m}월" for m in month_pivot.index]
-        
-        # 합계 행 및 열 추가
         month_pivot['월별 합계'] = month_pivot.sum(axis=1)
         
-        # 소수점 제거 및 정수 포맷팅
         st.markdown(f"##### 📋 **{selected_year}년도 [{selected_country}] 월별 기기 출고 현황표 (단위: 대)**")
         st.dataframe(
-            month_pivot.style.format("{:,.0f}").highlight_max(axis=0, color="#e6f4ea"),
+            month_pivot.style.format("{:,.0f}"),
             use_container_width=True
         )
     else:
