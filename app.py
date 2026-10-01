@@ -6,11 +6,11 @@ import os
 import re
 
 # ---------------------------------------------------------
-# 1. 페이지 설정
+# 1. 페이지 기본 설정
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="담당 국가별 기기 출고 현황",
-    page_icon="📦",
+    page_title="아프리카 국가별 & 연도/월별 기기 출고 현황",
+    page_icon="📋",
     layout="wide"
 )
 
@@ -79,9 +79,9 @@ def load_data(uploaded_files=None):
             else:
                 df['월'] = 1
                 
-            # 순수 완제품 기기만 필터링
+            # 완제품 기기만 필터링
             devices = df[(df['Level 1'] == '완제품') & (df['Level 2'] == '기기')].copy()
-            devices['기기 종류'] = devices['품명'].apply(classify_device_line)
+            devices['기기 플랫폼'] = devices['품명'].apply(classify_device_line)
             devices['연도'] = devices['연도'].astype(int)
             
             combined_dfs.append(devices)
@@ -91,107 +91,127 @@ def load_data(uploaded_files=None):
     return pd.concat(combined_dfs, ignore_index=True) if combined_dfs else None
 
 # ---------------------------------------------------------
-# 4. 메인 화면 구성
+# 4. 메인 대시보드 화면
 # ---------------------------------------------------------
-st.title("📦 담당 국가별 기기 출고 현황 (다중 선택 가능)")
+st.title("📋 아프리카 국가별 & 연도/월별 기기 출고 현황")
 
-uploaded_files = st.sidebar.file_uploader("엑셀 데이터 파일 업로드", type=["xlsx"], accept_multiple_files=True)
+uploaded_files = st.sidebar.file_uploader("엑셀 데이터 업로드", type=["xlsx"], accept_multiple_files=True)
 df = load_data(uploaded_files)
 
 if df is not None and len(df) > 0:
-    # 다중 국가 선택 필터 (multiselect)
+    
+    # ---------------------------------------------------------
+    # SECTION 1. 아프리카 지도 & 국가 선택
+    # ---------------------------------------------------------
+    st.subheader("🗺️ 1. 아프리카 지도에서 국가 선택")
+    st.caption("지도의 국가를 선택하거나 아래 Dropdown에서 국가를 선택하면, 해당 국가의 기기 플랫폼별 출고 수량이 표로 집계됩니다.")
+    
     all_countries = sorted([c for c in df['수출국가'].unique() if c and c != 'Nan'])
-    selected_countries = st.multiselect(
-        "🌍 담당 국가를 선택하세요 (여러 개 선택 가능):", 
-        options=all_countries, 
-        default=[]  # 기본값 비워둠 (아무것도 안 찍으면 전체 국가)
-    )
     
-    # 필터 적용
-    filtered_df = df.copy()
-    if selected_countries:
-        filtered_df = filtered_df[filtered_df['수출국가'].isin(selected_countries)]
-        display_title = ", ".join(selected_countries)
-    else:
-        display_title = "전체 국가"
+    col_map, col_select = st.columns([6, 4])
+    
+    # 지도 데이터 준비
+    map_df = df.groupby('수출국가')['수량환산'].sum().reset_index()
+    
+    with col_map:
+        fig_map = px.choropleth(
+            map_df,
+            locationmode='country names',
+            locations='수출국가',
+            color='수량환산',
+            hover_name='수출국가',
+            color_continuous_scale='Purples',
+            scope='africa',
+            title=""
+        )
+        fig_map.update_geos(
+            showcountries=True, countrycolor="#ced4da",
+            showland=True, landcolor="#f8f9fa",
+            fitbounds="locations"
+        )
+        fig_map.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=380)
         
+        # 지도에서 선택 capture (on_select 사용)
+        map_event = st.plotly_chart(fig_map, use_container_width=True, on_select="rerun", selection_mode="points")
+
+    # 선택된 국가 감지
+    clicked_country = None
+    if map_event and "selection" in map_event and "points" in map_event["selection"]:
+        points = map_event["selection"]["points"]
+        if len(points) > 0 and "location" in points[0]:
+            clicked_country = points[0]["location"]
+
+    with col_select:
+        # 지도를 클릭했으면 클릭한 국가를 선택, 없으면 기본 드롭다운 사용
+        default_index = 0
+        if clicked_country and clicked_country in all_countries:
+            default_index = all_countries.index(clicked_country) + 1
+
+        selected_country = st.selectbox(
+            "🌍 조회 대상 국가 선택:", 
+            options=["전체 국가"] + all_countries, 
+            index=default_index
+        )
+        
+        # 선택 국가 필터링
+        if selected_country != "전체 국가":
+            country_df = df[df['수출국가'] == selected_country]
+        else:
+            country_df = df.copy()
+
+        # 기기 플랫폼별 누적 현황 표 표시
+        st.markdown(f"##### 📊 **[{selected_country}] 기기 플랫폼별 누적 출고 수량**")
+        platform_summary = country_df.groupby('기기 플랫폼')['수량환산'].sum().reset_index()
+        platform_summary.columns = ['기기 플랫폼', '출고 수량 (대)']
+        
+        total_sum = platform_summary['출고 수량 (대)'].sum()
+        
+        st.dataframe(
+            platform_summary.sort_values(by='출고 수량 (대)', ascending=False),
+            use_container_width=True,
+            hide_index=True
+        )
+        st.success(f"**총 누적 출고 수량: {int(total_sum):,} 대**")
+
     st.markdown("---")
-    
-    # 총 누적 수량 요약
-    total_qty = int(filtered_df['수량환산'].sum())
-    st.metric(label=f"[{display_title}] 총 기기 출고 수량", value=f"{total_qty:,} 대")
-    
-    st.markdown("<br>", unsafe_allow_html=True)
 
     # ---------------------------------------------------------
-    # 1. 연도별 기기 출고 수량
+    # SECTION 2. 연도 선택 & 월별 출고 현황 (표 중심)
     # ---------------------------------------------------------
-    st.subheader("📅 1. 매년 어떤 기기가 몇 대 출고되었나요?")
+    st.subheader("🗓️ 2. 연도별 / 월별 기기 출고 현황 (표 형식)")
+    st.caption("조회하고 싶은 연도를 선택하면, 선택된 국가에서 **매월 어떤 기기가 몇 대 출고되었는지** 월별 표로 확인하실 수 있습니다.")
     
-    yearly_df = filtered_df.groupby(['연도', '기기 종류'])['수량환산'].sum().reset_index()
+    available_years = sorted([int(y) for y in country_df['연도'].unique()], reverse=True)
+    selected_year = st.selectbox("📅 연도 선택:", options=available_years, index=0)
     
-    if len(yearly_df) > 0:
-        fig_year = px.bar(
-            yearly_df, 
-            x='연도', 
-            y='수량환산', 
-            color='기기 종류', 
-            text_auto=',.0f',
-            title=f"[{display_title}] 연도별 기기 출고 수량"
+    # 선택된 연도의 데이터 필터링
+    year_df = country_df[country_df['연도'] == selected_year]
+    
+    if len(year_df) > 0:
+        # 월별 - 기기 플랫폼 피벗 테이블 생성
+        month_pivot = year_df.pivot_table(
+            index='월',
+            columns='기기 플랫폼',
+            values='수량환산',
+            aggfunc='sum',
+            fill_value=0
         )
-        fig_year.update_layout(plot_bgcolor='white', height=380, xaxis=dict(type='category'))
-        st.plotly_chart(fig_year, use_container_width=True)
         
-        # 연도별 숫자 표
-        year_pivot = filtered_df.pivot_table(
-            index='연도', 
-            columns='기기 종류', 
-            values='수량환산', 
-            aggfunc='sum', 
-            fill_value=0,
-            margins=True,
-            margins_name="합계"
-        )
-        st.dataframe(year_pivot.style.format("{:,.0f}"), use_container_width=True)
-    else:
-        st.info("선택한 국가의 데이터가 없습니다.")
-
-    st.markdown("<br><hr><br>", unsafe_allow_html=True)
-
-    # ---------------------------------------------------------
-    # 2. 월별 기기 출고 수량
-    # ---------------------------------------------------------
-    st.subheader("🗓️ 2. 월별로 기기가 몇 대 출고되었나요?")
-    
-    # 연도-월 칼럼 만들기
-    filtered_df['연월'] = filtered_df.apply(lambda r: f"{int(r['연도'])}년 {int(r['월']):02d}월", axis=1)
-    monthly_df = filtered_df.groupby(['연도', '월', '연월', '기기 종류'])['수량환산'].sum().reset_index().sort_values(by=['연도', '월'])
-    
-    if len(monthly_df) > 0:
-        fig_month = px.bar(
-            monthly_df, 
-            x='연월', 
-            y='수량환산', 
-            color='기기 종류', 
-            text_auto=',.0f',
-            title=f"[{display_title}] 월별 기기 출고 수량"
-        )
-        fig_month.update_layout(plot_bgcolor='white', height=400)
-        st.plotly_chart(fig_month, use_container_width=True)
+        # 1월~12월 모든 월 표시되도록 reindex
+        month_pivot = month_pivot.reindex(range(1, 13), fill_value=0)
+        month_pivot.index = [f"{m}월" for m in month_pivot.index]
         
-        # 월별 숫자 표
-        month_pivot = filtered_df.pivot_table(
-            index=['연도', '월'], 
-            columns='기기 종류', 
-            values='수량환산', 
-            aggfunc='sum', 
-            fill_value=0,
-            margins=True,
-            margins_name="합계"
+        # 합계 행 및 열 추가
+        month_pivot['월별 합계'] = month_pivot.sum(axis=1)
+        
+        # 소수점 제거 및 정수 포맷팅
+        st.markdown(f"##### 📋 **{selected_year}년도 [{selected_country}] 월별 기기 출고 현황표 (단위: 대)**")
+        st.dataframe(
+            month_pivot.style.format("{:,.0f}").highlight_max(axis=0, color="#e6f4ea"),
+            use_container_width=True
         )
-        st.dataframe(month_pivot.style.format("{:,.0f}"), use_container_width=True)
     else:
-        st.info("선택한 국가의 데이터가 없습니다.")
+        st.warning(f"{selected_year}년도에는 [{selected_country}]의 출고 데이터가 없습니다.")
 
 else:
     st.info("💡 `data/` 폴더에 엑셀 데이터 파일이 있거나 왼쪽 사이드바에 엑셀을 업로드해 주세요.")
