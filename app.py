@@ -4,13 +4,13 @@ import plotly.express as px
 
 # 1. 페이지 설정
 st.set_page_config(
-    page_title="고객사/국가별 기기 출고 누적 분석 플랫폼",
-    page_icon="📈",
+    page_title="글로벌 기기 출고 및 고객사 분석 플랫폼",
+    page_icon="🌍",
     layout="wide"
 )
 
-st.title("📈 고객사/국가별 기기 출고 및 설치 누적 분석 플랫폼")
-st.markdown("매출 DB를 기반으로 **국가 내 고객사별 기기 라인업(AFIAS, ichroma 등) 출고 현황**을 자동 집계합니다.")
+st.title("🌍 글로벌 기기 출고 및 고객사 분석 플랫폼")
+st.markdown("매출 DB 기반 **전 세계 기기 설치 지도 시각화** 및 **국가/고객사별 기기 라인업 분석**")
 
 # 기기 라인업 자동 분류 함수
 def classify_device_line(item_name):
@@ -40,14 +40,14 @@ if uploaded_file is not None:
         sheet_name = xls.sheet_names[0]
         df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_name)
         
-        # 헤더 정돈 (4번째 행이 실제 칼럼명)
+        # 헤더 정돈
         df = df_raw.iloc[4:].copy()
         df.columns = df_raw.iloc[3].values
         
         # 전처리
         df['Level 1'] = df['Level 1'].astype(str).str.strip()
         df['Level 2'] = df['Level 2'].astype(str).str.strip()
-        df['수출국가'] = df['수출국가'].astype(str).str.strip()
+        df['수출국가'] = df['수출국가'].astype(str).str.strip().str.title()  # 지도 매핑용 Title case
         df['고객'] = df['고객'].astype(str).str.strip()
         df['담당자'] = df['담당자'].astype(str).str.strip()
         df['팀 분류'] = df['팀 분류'].astype(str).str.strip()
@@ -58,63 +58,94 @@ if uploaded_file is not None:
         devices_df = df[(df['Level 1'] == '완제품') & (df['Level 2'] == '기기')].copy()
         devices_df['기기 라인'] = devices_df['품명'].apply(classify_device_line)
         
-        st.success(f"✅ 데이터 로드 완료! (총 {len(devices_df):,} 건의 완제품 기기 출고 데이터)")
+        st.success(f"✅ 데이터 분석 완료! (총 {len(devices_df):,} 건의 완제품 기기 출고 데이터)")
         
         # 3. 사이드바 영업 필터
         st.sidebar.header("🔍 영업 분석 필터")
         
-        # 팀 / 담당자 필터
         teams = sorted([t for t in devices_df['팀 분류'].unique() if t and t != 'nan'])
         selected_teams = st.sidebar.multiselect("담당 팀 선택", options=teams, default=[])
-        
         if selected_teams:
             devices_df = devices_df[devices_df['팀 분류'].isin(selected_teams)]
             
         managers = sorted([m for m in devices_df['담당자'].unique() if m and m != 'nan'])
         selected_managers = st.sidebar.multiselect("영업 담당자 선택", options=managers, default=[])
-        
         if selected_managers:
             devices_df = devices_df[devices_df['담당자'].isin(selected_managers)]
             
-        # 국가 / 고객 / 기기 라인 필터
         countries = sorted(devices_df['수출국가'].unique())
         selected_countries = st.sidebar.multiselect("수출 국가 선택", options=countries, default=[])
-        
         if selected_countries:
             devices_df = devices_df[devices_df['수출국가'].isin(selected_countries)]
             
-        customers = sorted(devices_df['고객'].unique())
-        selected_customers = st.sidebar.multiselect("고객사 선택", options=customers, default=[])
-        
-        if selected_customers:
-            devices_df = devices_df[devices_df['고객'].isin(selected_customers)]
-            
         device_lines = sorted(devices_df['기기 라인'].unique())
         selected_lines = st.sidebar.multiselect("기기 라인 선택", options=device_lines, default=[])
-        
         if selected_lines:
             devices_df = devices_df[devices_df['기기 라인'].isin(selected_lines)]
 
-        # 월 컬럼 추출
         month_cols = sorted([int(m) for m in devices_df['매출인식月'].dropna().unique()])
         
-        # 4. 주요 요약 지표 (KPI Cards)
-        st.subheader("📌 영업 핵심 지표")
+        # 4. 주요 요약 지표
+        st.subheader("📌 영업 핵심 KPI")
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("총 거래 국가 수", f"{devices_df['수출국가'].nunique():,} 개국")
-        col2.metric("총 거래 고객사 수", f"{devices_df['고객'].nunique():,} 개 고객사")
+        col1.metric("진출 국가 수", f"{devices_df['수출국가'].nunique():,} 개국")
+        col2.metric("총 거래 고객사 수", f"{devices_df['고객'].nunique():,} 개사")
         col3.metric("총 기기 출고 수량", f"{int(devices_df['수량환산'].sum()):,} 대")
         col4.metric("집계 월 범위", f"{min(month_cols)}월 ~ {max(month_cols)}월")
         
         st.write("---")
         
         # 5. 분석 탭
-        tab1, tab2, tab3 = st.tabs(["👥 고객사별 기기 믹스 현황", "📆 월별/누적 출고 추이", "🗺️ 국가-고객 상세 드릴다운"])
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "🗺️ 글로벌 기기 설치 지도", 
+            "👥 고객사별 기기 믹스", 
+            "📆 월별/누적 출고 추이", 
+            "🔎 국가별 상세 드릴다운"
+        ])
         
+        # TAB 1: 지도 시각화 (요청하신 기능)
         with tab1:
+            st.subheader("🗺️ 전 세계 국가별 기기 출고 및 설치 분포 지도")
+            
+            # 국가별 집계
+            country_map_df = devices_df.groupby(['수출국가', '기기 라인'])['수량환산'].sum().reset_index()
+            country_total = devices_df.groupby('수출국가')['수량환산'].sum().reset_index()
+            country_total.rename(columns={'수량환산': '총 기기 출고량'}, inplace=True)
+            
+            map_style = st.radio("지도 시각화 스타일 선택", ["색상 음영 지도 (Choropleth)", "비례 원형 버블 지도 (Bubble Map)"], horizontal=True)
+            scope = st.selectbox("조회 지역 선택", ["world", "asia", "europe", "africa", "north america", "south america"])
+            
+            if "색상 음영" in map_style:
+                fig_map = px.choropleth(
+                    country_total,
+                    locations="수출국가",
+                    locationmode="country names",
+                    color="총 기기 출고량",
+                    hover_name="수출국가",
+                    color_continuous_scale="Purples", # 이미지 느낌의 퍼플 스케일
+                    title="국가별 총 기기 출고량 음영 지도",
+                    scope=scope
+                )
+            else:
+                fig_map = px.scatter_geo(
+                    country_map_df,
+                    locations="수출국가",
+                    locationmode="country names",
+                    size="수량환산",
+                    color="기기 라인",
+                    hover_name="수출국가",
+                    size_max=35,
+                    title="국가/기기 라인별 비례 버블 분포 지도",
+                    scope=scope
+                )
+                
+            fig_map.update_layout(margin={"r":0,"t":40,"l":0,"b":0}, height=550)
+            st.plotly_chart(fig_map, use_container_width=True)
+            
+        # TAB 2: 고객사 믹스
+        with tab2:
             st.subheader("고객사별 기기 라인업 출고 수량 및 비중")
             
-            # 고객 x 기기 라인 피벗
             cust_line_pivot = devices_df.pivot_table(
                 index=['수출국가', '고객'],
                 columns='기기 라인',
@@ -127,7 +158,6 @@ if uploaded_file is not None:
             
             st.dataframe(cust_line_pivot.style.format("{:,.0f}"), use_container_width=True)
             
-            # 상위 15개 고객사 기기 믹스 차트
             st.subheader("상위 15개 고객사의 기기 라인업 믹스")
             top_15_cust = cust_line_pivot.head(15).drop(columns=['합계']).reset_index()
             top_15_melted = top_15_cust.melt(id_vars=['수출국가', '고객'], var_name='기기 라인', value_name='수량')
@@ -143,7 +173,8 @@ if uploaded_file is not None:
             fig_mix.update_layout(xaxis_tickangle=-45)
             st.plotly_chart(fig_mix, use_container_width=True)
             
-        with tab2:
+        # TAB 3: 월별/누적 추이
+        with tab3:
             st.subheader("고객사별 월별 단독 및 누적 출고량")
             
             cust_monthly = devices_df.pivot_table(
@@ -159,7 +190,6 @@ if uploaded_file is not None:
             cust_monthly['총 누적 출고량'] = cust_monthly.sum(axis=1)
             cust_monthly = cust_monthly.sort_values(by='총 누적 출고량', ascending=False)
             
-            # 월별 누적 테이블
             cust_cum = cust_monthly[month_names].cumsum(axis=1)
             cust_cum['최종 누적량'] = cust_monthly['총 누적 출고량']
             
@@ -169,16 +199,8 @@ if uploaded_file is not None:
             st.markdown("##### 2. 고객사별 월별 누적 출고량 (대)")
             st.dataframe(cust_cum.style.format("{:,.0f}"), use_container_width=True)
             
-            # CSV 다운로드
-            csv = cust_cum.to_csv().encode('utf-8-sig')
-            st.download_button(
-                label="📥 고객사별 누적 데이터 CSV 다운로드",
-                data=csv,
-                file_name="고객사별_기기_누적출고현황.csv",
-                mime="text/csv"
-            )
-            
-        with tab3:
+        # TAB 4: 국가별 상세
+        with tab4:
             st.subheader("특정 국가 내 고객사별 기기 설치/출고 현황 드릴다운")
             target_country = st.selectbox("분석할 국가를 선택하세요", options=countries)
             
@@ -202,8 +224,6 @@ if uploaded_file is not None:
                     .sort_values(by=['고객', '매출인식月']),
                     use_container_width=True
                 )
-            else:
-                st.info("선택한 국가의 데이터가 존재하지 않습니다.")
 
     except Exception as e:
         st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
