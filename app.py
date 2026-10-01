@@ -9,73 +9,73 @@ import re
 # 1. 페이지 기본 설정
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="아프리카 국가별 기기 출고 현황 (2018~2026.08)",
-    page_icon="🗺️",
+    page_title="아프리카 기기 출고 현황 대시보드 (2018~2026)",
+    page_icon="📊",
     layout="wide"
 )
 
 # ---------------------------------------------------------
-# 2. 기기 플랫폼 세부 정제 및 분류 함수 (우선순위 적용)
+# 2. 기기 분류 함수 (대분류: 플랫폼 / 소분류: 기기 상세)
 # ---------------------------------------------------------
-def classify_device_line(item_name):
+def classify_device(item_name):
     name = str(item_name).upper().replace(' ', '').replace('-', '').replace('_', '')
     
-    # 1. Chemichroma (ichroma보다 먼저 체크 필수!)
+    # 1. Chemichroma
     if 'CHEMICHROMA' in name:
-        return 'Chemichroma'
+        return 'Chemichroma', 'Chemichroma'
     
-    # 2. hemochroma 시리즈 (PLUS와 II 세부 분리)
+    # 2. hemochroma 시리즈
     elif 'HEMOCHROMAPLUS' in name:
-        return 'hemochroma PLUS'
+        return 'hemochroma', 'hemochroma PLUS'
     elif 'HEMOCHROMA' in name:
-        return 'hemochroma II'
+        return 'hemochroma', 'hemochroma II'
         
-    # 3. AFIAS 세부 분류
+    # 3. AFIAS 시리즈
     elif 'AFIAS10' in name:
-        return 'AFIAS-10'
+        return 'AFIAS', 'AFIAS-10'
     elif 'AFIAS6' in name:
-        return 'AFIAS-6'
+        return 'AFIAS', 'AFIAS-6'
     elif 'AFIAS3' in name:
-        return 'AFIAS-3'
+        return 'AFIAS', 'AFIAS-3'
     elif 'AFIAS1' in name:
-        return 'AFIAS-1'
+        return 'AFIAS', 'AFIAS-1'
     elif 'AFIAS' in name:
-        return '기타 AFIAS'
+        return 'AFIAS', '기타 AFIAS'
     
-    # 4. ichroma 세부 분류 (M2, M3, TRIAS, II/2, III/3)
+    # 4. ichroma 시리즈
     elif 'TRIAS' in name:
-        return 'ichroma TRIAS'
+        return 'ichroma', 'ichroma TRIAS'
     elif 'M3' in name:
-        return 'ichroma M3'
+        return 'ichroma', 'ichroma M3'
     elif 'M2' in name:
-        return 'ichroma M2'
+        return 'ichroma', 'ichroma M2'
     elif 'ICHROMA3' in name or 'ICHROMAIII' in name:
-        return 'ichroma III'
+        return 'ichroma', 'ichroma III'
     elif 'ICHROMA2' in name or 'ICHROMAII' in name or 'ICHROMA' in name:
-        return 'ichroma II'
+        return 'ichroma', 'ichroma II'
     
     # 5. Vet (동물용) 시리즈
     elif 'VET' in name:
-        return 'Vet (동물용)'
+        return 'Vet (동물용)', 'Vet (동물용)'
     
     # 6. 기타 특정 기기 라인업
     elif 'CHAMBER' in name:
-        return 'i-Chamber'
+        return 'i-Chamber', 'i-Chamber'
     elif 'ALCHEMIS' in name:
-        return 'Alchemis'
+        return 'Alchemis', 'Alchemis'
     elif 'CBCHROMA' in name:
-        return 'CBChroma'
+        return 'CBChroma', 'CBChroma'
     elif 'SPEEDREADER' in name:
-        return 'Speed Reader'
+        return 'Speed Reader', 'Speed Reader'
     elif 'SYNCNEB' in name:
-        return 'SyncNeb'
+        return 'SyncNeb', 'SyncNeb'
     elif 'AH600' in name:
-        return 'AH600'
+        return 'AH600', 'AH600'
     else:
-        return '기타 기기'
+        return '기타', '기타 기기'
 
 # ---------------------------------------------------------
-# 3. 데이터 로드 및 정제 (2018 ~ 2026.08)
+# 3. 데이터 로드 및 정제
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def load_data(uploaded_files=None):
@@ -100,7 +100,17 @@ def load_data(uploaded_files=None):
             df['수출국가'] = df['수출국가'].astype(str).str.strip().str.title()
             df['수량환산'] = pd.to_numeric(df['수량환산'], errors='coerce').fillna(0)
             
-            # 연도 추출
+            # 거래처/회사 컬럼 확인
+            if '거래처' in df.columns:
+                df['회사'] = df['거래처'].astype(str).str.strip()
+            elif '거래처명' in df.columns:
+                df['회사'] = df['거래처명'].astype(str).str.strip()
+            elif '고객사' in df.columns:
+                df['회사'] = df['고객사'].astype(str).str.strip()
+            else:
+                df['회사'] = '미지정'
+            
+            # 연도 파싱
             if '연도' in df.columns:
                 df['연도'] = pd.to_numeric(df['연도'], errors='coerce')
             elif '매출인식年' in df.columns:
@@ -109,7 +119,7 @@ def load_data(uploaded_files=None):
                 year_match = re.search(r'20\d{2}', file_name)
                 df['연도'] = int(year_match.group()) if year_match else 2026
                 
-            # 월 추출
+            # 월 파싱
             if '월' in df.columns:
                 df['월'] = pd.to_numeric(df['월'], errors='coerce').fillna(1).astype(int)
             elif '매출인식月' in df.columns:
@@ -119,8 +129,12 @@ def load_data(uploaded_files=None):
                 
             # 완제품 기기 필터링 (Level 1 == 완제품 & Level 2 == 기기)
             devices = df[(df['Level 1'] == '완제품') & (df['Level 2'] == '기기')].copy()
-            devices['기기 플랫폼'] = devices['품명'].apply(classify_device_line)
-            devices['연도'] = devices['연도'].astype(int)
+            
+            # 플랫폼 및 상세 기기 분류 적용
+            classified = devices['품명'].apply(classify_device)
+            devices['기기 플랫폼'] = [c[0] for c in classified]
+            devices['기기 상세'] = [c[1] for c in classified]
+            devices['연도'] = devices['연도'].fillna(2026).astype(int)
             
             combined_dfs.append(devices)
         except Exception:
@@ -129,29 +143,80 @@ def load_data(uploaded_files=None):
     return pd.concat(combined_dfs, ignore_index=True) if combined_dfs else None
 
 # ---------------------------------------------------------
-# 4. 메인 화면
+# 4. 메인 대시보드 화면
 # ---------------------------------------------------------
-st.title("🗺️ 아프리카 국가별 기기 출고 현황 (2018 ~ 2026.08)")
+st.title("📊 아프리카 국가별/기기별 출고 현황 대시보드")
 
-uploaded_files = st.sidebar.file_uploader("엑셀 데이터 업로드", type=["xlsx"], accept_multiple_files=True)
+uploaded_files = st.sidebar.file_uploader("📂 엑셀 파일 업로드", type=["xlsx"], accept_multiple_files=True)
 df = load_data(uploaded_files)
 
 if df is not None and len(df) > 0:
     
     # ---------------------------------------------------------
-    # SECTION 1. 아프리카 지도 & 국가 선택
+    # 다중 선택 (Multi-select) 필터 사이드바
     # ---------------------------------------------------------
-    st.subheader("🌐 1. 아프리카 지도에서 국가 클릭 또는 선택")
-    st.caption("지도에서 원하는 국가 영토를 누르거나, 우측 드롭다운에서 국가를 선택하면 플랫폼별 출고 수량이 집계됩니다.")
+    st.sidebar.header("🔍 검색 및 다중 선택 필터")
     
+    # 1. 연도 필터 (2018~2026 전체 표시 보장)
+    existing_years = set(df['연도'].dropna().unique())
+    all_years = sorted(list(existing_years.union(set(range(2018, 2027)))), reverse=True)
+    selected_years = st.sidebar.multiselect("📅 연도 선택", options=all_years, default=sorted(list(existing_years), reverse=True))
+    
+    # 2. 월 필터
+    all_months = list(range(1, 13))
+    selected_months = st.sidebar.multiselect("🗓️ 월 선택", options=all_months, default=all_months, format_func=lambda x: f"{x}월")
+    
+    # 3. 국가 필터
     all_countries = sorted([c for c in df['수출국가'].unique() if c and c != 'Nan'])
+    selected_countries = st.sidebar.multiselect("🌍 국가 선택", options=all_countries, default=all_countries)
     
-    col_map, col_select = st.columns([6, 4])
+    # 4. 회사 필터
+    all_companies = sorted([c for c in df['회사'].unique() if c and c != 'nan'])
+    selected_companies = st.sidebar.multiselect("🏢 회사(거래처) 선택", options=all_companies, default=all_companies)
     
-    # 지도용 누적 집계
-    map_df = df.groupby('수출국가')['수량환산'].sum().reset_index()
+    # 5. 기기 플랫폼 필터 (대분류)
+    all_platforms = sorted(list(df['기기 플랫폼'].unique()))
+    selected_platforms = st.sidebar.multiselect("🔬 기기 플랫폼(대분류) 선택", options=all_platforms, default=all_platforms)
+    
+    # 6. 기기 상세 필터 (소분류)
+    filtered_details_options = sorted(list(df[df['기기 플랫폼'].isin(selected_platforms)]['기기 상세'].unique()))
+    selected_details = st.sidebar.multiselect("⚙️ 기기 상세(소분류) 선택", options=filtered_details_options, default=filtered_details_options)
+
+    # ---------------------------------------------------------
+    # 필터 조건에 따른 데이터 추출
+    # ---------------------------------------------------------
+    filtered_df = df[
+        (df['연도'].isin(selected_years)) &
+        (df['월'].isin(selected_months)) &
+        (df['수출국가'].isin(selected_countries)) &
+        (df['회사'].isin(selected_companies)) &
+        (df['기기 플랫폼'].isin(selected_platforms)) &
+        (df['기기 상세'].isin(selected_details))
+    ]
+
+    # 요약 카드 (KPI Metrics)
+    m1, m2, m3, m4 = st.columns(4)
+    total_qty = filtered_df['수량환산'].sum()
+    country_count = filtered_df['수출국가'].nunique()
+    company_count = filtered_df['회사'].nunique()
+    device_count = filtered_df['기기 상세'].nunique()
+    
+    m1.metric("총 출고 수량", f"{int(total_qty):,} 대")
+    m2.metric("선택 국가 수", f"{country_count} 개국")
+    m3.metric("선택 회사 수", f"{company_count} 개사")
+    m4.metric("기기 모델 종류", f"{device_count} 종")
+
+    st.markdown("---")
+
+    # ---------------------------------------------------------
+    # 지도 및 플랫폼/기기 상세 집계
+    # ---------------------------------------------------------
+    col_map, col_summary = st.columns([6, 4])
     
     with col_map:
+        st.subheader("🌐 아프리카 지도 분포")
+        map_df = filtered_df.groupby('수출국가')['수량환산'].sum().reset_index()
+        
         fig_map = px.choropleth(
             map_df,
             locationmode='country names',
@@ -167,83 +232,61 @@ if df is not None and len(df) > 0:
             showland=True, landcolor="#F5F5F5",
             fitbounds="locations"
         )
-        fig_map.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=420)
-        
-        # 지도 인터랙티브 선택 기능
-        map_event = st.plotly_chart(
-            fig_map, 
-            use_container_width=True, 
-            on_select="rerun", 
-            selection_mode="points"
-        )
+        fig_map.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=450)
+        st.plotly_chart(fig_map, use_container_width=True)
 
-    # 지도의 클릭 이벤트 감지
-    clicked_country = None
-    if map_event and "selection" in map_event and "points" in map_event["selection"]:
-        points = map_event["selection"]["points"]
-        if len(points) > 0 and "location" in points[0]:
-            clicked_country = points[0]["location"]
-
-    with col_select:
-        # 클릭한 국가 자동 반영
-        default_index = 0
-        if clicked_country and clicked_country in all_countries:
-            default_index = all_countries.index(clicked_country) + 1
-
-        selected_country = st.selectbox(
-            "🌍 조회 국가 선택:", 
-            options=["전체 국가"] + all_countries, 
-            index=default_index
-        )
-        
-        # 선택된 국가 데이터 필터링
-        country_df = df if selected_country == "전체 국가" else df[df['수출국가'] == selected_country]
-
-        st.markdown(f"##### 📊 **[{selected_country}] 세부 플랫폼별 출고 현황 (2018~2026.08)**")
-        platform_summary = country_df.groupby('기기 플랫폼')['수량환산'].sum().reset_index()
-        platform_summary.columns = ['기기 플랫폼', '출고 수량 (대)']
-        
-        total_sum = platform_summary['출고 수량 (대)'].sum()
+    with col_summary:
+        st.subheader("📋 기기 상세 집계표")
+        detail_summary = filtered_df.groupby(['기기 플랫폼', '기기 상세'])['수량환산'].sum().reset_index()
+        detail_summary.columns = ['플랫폼', '기기 상세 모델', '출고 수량 (대)']
+        detail_summary = detail_summary.sort_values(by='출고 수량 (대)', ascending=False)
         
         st.dataframe(
-            platform_summary.sort_values(by='출고 수량 (대)', ascending=False),
+            detail_summary,
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
+            height=380
         )
-        st.success(f"**[{selected_country}] 총 누적 수량: {int(total_sum):,} 대**")
 
     st.markdown("---")
 
     # ---------------------------------------------------------
-    # SECTION 2. 연도 선택 & 월별 출고 현황 (표 중심)
+    # 세부 크로스탭 분석 피벗 테이블
     # ---------------------------------------------------------
-    st.subheader("🗓️ 2. 연도별 / 월별 세부 출고 현황표")
+    st.subheader("📑 조건별 세부 출고 피벗 테이블")
     
-    available_years = sorted([int(y) for y in country_df['연도'].unique()], reverse=True)
-    selected_year = st.selectbox("📅 연도 선택 (2018~2026):", options=available_years, index=0)
+    view_option = st.radio(
+        "표시할 행(Row) 기준 선택:",
+        ["국가별 x 기기 상세", "회사별 x 기기 상세", "월별 x 기기 상세", "연도별 x 기기 상세"],
+        horizontal=True
+    )
     
-    year_df = country_df[country_df['연도'] == selected_year]
-    
-    if len(year_df) > 0:
-        month_pivot = year_df.pivot_table(
-            index='월',
-            columns='기기 플랫폼',
+    if view_option == "국가별 x 기기 상세":
+        row_col = '수출국가'
+    elif view_option == "회사별 x 기기 상세":
+        row_col = '회사'
+    elif view_option == "월별 x 기기 상세":
+        row_col = '월'
+    else:
+        row_col = '연도'
+
+    if len(filtered_df) > 0:
+        pivot_df = filtered_df.pivot_table(
+            index=row_col,
+            columns='기기 상세',
             values='수량환산',
             aggfunc='sum',
             fill_value=0
         )
+        pivot_df['총 합계'] = pivot_df.sum(axis=1)
+        pivot_df = pivot_df.sort_values(by='총 합계', ascending=False)
         
-        month_pivot = month_pivot.reindex(range(1, 13), fill_value=0)
-        month_pivot.index = [f"{m}월" for m in month_pivot.index]
-        month_pivot['월별 합계'] = month_pivot.sum(axis=1)
-        
-        st.markdown(f"##### 📋 **{selected_year}년도 [{selected_country}] 월별 기기 출고 현황표 (단위: 대)**")
-        st.dataframe(
-            month_pivot.style.format("{:,.0f}"),
-            use_container_width=True
-        )
+        if row_col == '월':
+            pivot_df.index = [f"{m}월" for m in pivot_df.index]
+            
+        st.dataframe(pivot_df.style.format("{:,.0f}"), use_container_width=True)
     else:
-        st.warning(f"{selected_year}년도에는 [{selected_country}]의 출고 데이터가 없습니다.")
+        st.warning("선택한 필터 조건에 해당하는 데이터가 없습니다.")
 
 else:
     st.info("💡 `data/` 폴더에 엑셀 데이터 파일이 있거나 왼쪽 사이드바에 엑셀을 업로드해 주세요.")
