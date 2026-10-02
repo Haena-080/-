@@ -75,7 +75,7 @@ def classify_device_line(item_name):
         return '기타 기기'
 
 # ---------------------------------------------------------
-# 3. 데이터 로드 및 정제 (2018 ~ 2026.08)
+# 3. 데이터 로드 및 정제 (날짜 및 연도 추산 보완)
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def load_data(uploaded_files=None):
@@ -87,43 +87,87 @@ def load_data(uploaded_files=None):
         return None
         
     for file in target_files:
-        file_name = file.name if hasattr(file, 'name') else os.path.basename(file)
+        # 파일명 추출
+        if hasattr(file, 'name'):
+            file_name = file.name
+        else:
+            file_name = os.path.basename(file)
+            
         try:
             xls = pd.ExcelFile(file)
             df_raw = pd.read_excel(file, sheet_name=xls.sheet_names[0])
             
+            # 헤더 위치 정제
             df = df_raw.iloc[4:].copy()
-            df.columns = df_raw.iloc[3].values
+            df.columns = [str(col).strip() for col in df_raw.iloc[3].values]
             
+            # 필수 컬럼 기본 정제
+            if 'Level 1' not in df.columns or 'Level 2' not in df.columns:
+                continue
+                
             df['Level 1'] = df['Level 1'].astype(str).str.strip()
             df['Level 2'] = df['Level 2'].astype(str).str.strip()
-            df['수출국가'] = df['수출국가'].astype(str).str.strip().str.title()
-            df['수량환산'] = pd.to_numeric(df['수량환산'], errors='coerce').fillna(0)
             
-            # 연도 추출
-            if '연도' in df.columns:
-                df['연도'] = pd.to_numeric(df['연도'], errors='coerce')
-            elif '매출인식年' in df.columns:
-                df['연도'] = pd.to_numeric(df['매출인식年'], errors='coerce')
+            if '수출국가' in df.columns:
+                df['수출국가'] = df['수출국가'].astype(str).str.strip().str.title()
             else:
-                year_match = re.search(r'20\d{2}', file_name)
-                df['연도'] = int(year_match.group()) if year_match else 2026
+                df['수출국가'] = 'Unknown'
                 
-            # 월 추출
-            if '월' in df.columns:
-                df['월'] = pd.to_numeric(df['월'], errors='coerce').fillna(1).astype(int)
-            elif '매출인식月' in df.columns:
-                df['월'] = pd.to_numeric(df['매출인식月'], errors='coerce').fillna(1).astype(int)
+            if '수량환산' in df.columns:
+                df['수량환산'] = pd.to_numeric(df['수량환산'], errors='coerce').fillna(0)
             else:
-                df['월'] = 1
-                
+                df['수량환산'] = 0
+
+            # ---------------------------------------------------------
+            # 연도 및 월 자동 감지/추산 로직 강화
+            # ---------------------------------------------------------
+            year_series = None
+            month_series = None
+            
+            # 1. 날짜 타입 컬럼(일자, 매출일자, Date 등) 감지 시도
+            date_cols = [c for c in df.columns if any(kw in str(c) for kw in ['일자', '날짜', 'Date', '매출일', '출고일'])]
+            if date_cols:
+                parsed_dates = pd.to_datetime(df[date_cols[0]], errors='coerce')
+                if parsed_dates.notna().sum() > 0:
+                    year_series = parsed_dates.dt.year
+                    month_series = parsed_dates.dt.month
+
+            # 2. 명시적인 '연도', '매출인식年' 컬럼 확인
+            if year_series is None or year_series.isna().all():
+                if '연도' in df.columns:
+                    year_series = pd.to_numeric(df['연도'], errors='coerce')
+                elif '매출인식年' in df.columns:
+                    year_series = pd.to_numeric(df['매출인식年'], errors='coerce')
+                elif '년' in df.columns:
+                    year_series = pd.to_numeric(df['년'], errors='coerce')
+
+            # 3. 명시적인 '월', '매출인식月' 컬럼 확인
+            if month_series is None or month_series.isna().all():
+                if '월' in df.columns:
+                    month_series = pd.to_numeric(df['월'], errors='coerce')
+                elif '매출인식月' in df.columns:
+                    month_series = pd.to_numeric(df['매출인식月'], errors='coerce')
+
+            # 4. 파일 이름에서 연도 추출 (Fallback)
+            year_match = re.search(r'(201[89]|202[0-6])', file_name)
+            fallback_year = int(year_match.group(1)) if year_match else 2026
+
+            # 최종 연도/월 대입
+            df['연도'] = year_series.fillna(fallback_year) if year_series is not None else fallback_year
+            df['월'] = month_series.fillna(1) if month_series is not None else 1
+
+            df['연도'] = pd.to_numeric(df['연도'], errors='coerce').fillna(fallback_year).astype(int)
+            df['월'] = pd.to_numeric(df['월'], errors='coerce').fillna(1).astype(int)
+            
             # 완제품 기기 필터링 (Level 1 == 완제품 & Level 2 == 기기)
             devices = df[(df['Level 1'] == '완제품') & (df['Level 2'] == '기기')].copy()
-            devices['기기 플랫폼'] = devices['품명'].apply(classify_device_line)
-            devices['연도'] = devices['연도'].astype(int)
+            if '품명' in devices.columns:
+                devices['기기 플랫폼'] = devices['품명'].apply(classify_device_line)
+            else:
+                devices['기기 플랫폼'] = '기타 기기'
             
             combined_dfs.append(devices)
-        except Exception:
+        except Exception as e:
             continue
         
     return pd.concat(combined_dfs, ignore_index=True) if combined_dfs else None
@@ -144,7 +188,7 @@ if df is not None and len(df) > 0:
     st.subheader("🌐 1. 아프리카 지도에서 국가 클릭 또는 선택")
     st.caption("지도에서 원하는 국가 영토를 누르거나, 우측 드롭다운에서 국가를 선택하면 플랫폼별 출고 수량이 집계됩니다.")
     
-    all_countries = sorted([c for c in df['수출국가'].unique() if c and c != 'Nan'])
+    all_countries = sorted([c for c in df['수출국가'].unique() if c and str(c).lower() != 'nan' and c != 'Unknown'])
     
     col_map, col_select = st.columns([6, 4])
     
@@ -219,8 +263,11 @@ if df is not None and len(df) > 0:
     # ---------------------------------------------------------
     st.subheader("🗓️ 2. 연도별 / 월별 세부 출고 현황표")
     
-    available_years = sorted([int(y) for y in country_df['연도'].unique()], reverse=True)
-    selected_year = st.selectbox("📅 연도 선택 (2018~2026):", options=available_years, index=0)
+    # 2018부터 2026까지 기본 연도 리스트 보장 및 실제 존재하는 연도 병합
+    data_years = [int(y) for y in country_df['연도'].unique() if pd.notna(y)]
+    full_years = sorted(list(set(range(2018, 2027)).union(set(data_years))), reverse=True)
+    
+    selected_year = st.selectbox("📅 연도 선택 (2018~2026):", options=full_years, index=0)
     
     year_df = country_df[country_df['연도'] == selected_year]
     
